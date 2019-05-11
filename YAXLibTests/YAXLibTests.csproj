@@ -55,6 +55,7 @@
     <Compile Include="ExceptionTests.cs" />
     <Compile Include="GeneralToString.cs" />
     <Compile Include="KnownTypeTests.cs" />
+    <Compile Include="LargeDocTest.cs" />
     <Compile Include="NamespaceTest.cs" />
     <Compile Include="NumericMinMaxTests.cs" />
     <Compile Include="OverridingYAXLibMetadataTests.cs" />
@@ -81,6 +82,7 @@
     <Compile Include="SampleClasses\DictionaryWithExtraPropertiesAttributedAsNotCollection.cs" />
     <Compile Include="SampleClasses\DictionaryWithExtraProperties.cs" />
     <Compile Include="SampleClasses\IndexerSample.cs" />
+    <Compile Include="SampleClasses\LargeDocChart.cs" />
     <Compile Include="SampleClasses\NullableClassWithAttribute.cs" />
     <Compile Include="SampleClasses\OneLetterAlias.cs" />
     <Compile Include="SampleClasses\PolymorphicSampleList.cs" />

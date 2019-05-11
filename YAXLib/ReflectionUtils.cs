@@ -700,56 +700,78 @@ namespace YAXLib
         /// <returns>the converted object</returns>
         public static object ConvertBasicType(object value, Type dstType)
         {
-            object convertedObj = null;
+            return GetConvertBasicTypeFunc(dstType).Invoke(value);
+        }
+
+        
+        /// <summary>
+        /// Gets a function to converts the specified object from a basic type to another type as specified.
+        /// It is meant by basic types, primitive data types, strings, and enums.
+        /// </summary>
+        /// <param name="dstType">the destination type of conversion.</param>
+        /// <returns>the converted object</returns>
+        public static Func<object, object> GetConvertBasicTypeFunc(Type dstType)
+        {
+            Func<object, object> convertObjFunc = null;
             if (dstType.IsEnum())
             {
                 UdtWrapper typeWrapper = TypeWrappersPool.Pool.GetTypeWrapper(dstType, null);
-                convertedObj = typeWrapper.EnumWrapper.ParseAlias(value.ToString());
+                convertObjFunc = value => typeWrapper.EnumWrapper.ParseAlias(value.ToString());
             }
             else if (dstType == typeof(DateTime))
             {
-                convertedObj = StringUtils.ParseDateTimeTimeZoneSafe(value.ToString(), CultureInfo.InvariantCulture);
+                convertObjFunc = value => StringUtils.ParseDateTimeTimeZoneSafe(value.ToString(), CultureInfo.InvariantCulture);
             }
             else if (dstType == typeof(decimal))
             {
                 // to fix the asymetry of used locales for this type between serialization and deseralization
-                convertedObj = Convert.ChangeType(value, dstType, CultureInfo.InvariantCulture);
+                convertObjFunc = value => Convert.ChangeType(value, dstType, CultureInfo.InvariantCulture);
             }
             else if (dstType == typeof(bool))
             {
-                string strValue = value.ToString().Trim().ToLower();
-                if (strValue == "false" || strValue == "no" || strValue == "0")
-                    convertedObj = false;
-                else if (strValue == "true" || strValue == "yes" || strValue == "1")
-                    convertedObj = true;
-                else
+                convertObjFunc = value =>
                 {
-                    int boolIntValue = 0;
-                    if (Int32.TryParse(strValue, out boolIntValue))
-                        convertedObj = boolIntValue == 0 ? false : true;
+                    object convertedObj = null;
+                    string strValue = value.ToString().Trim().ToLower();
+                    if (strValue == "false" || strValue == "no" || strValue == "0")
+                        convertedObj = false;
+                    else if (strValue == "true" || strValue == "yes" || strValue == "1")
+                        convertedObj = true;
                     else
-                        throw new Exception("The specified value is not recognized as boolean: " + strValue);
-                }
+                    {
+                        int boolIntValue = 0;
+                        if (Int32.TryParse(strValue, out boolIntValue))
+                            convertedObj = boolIntValue == 0 ? false : true;
+                        else
+                            throw new Exception("The specified value is not recognized as boolean: " + strValue);
+                    }
+                    return convertedObj;
+                };
             }
             else if (dstType == typeof(Guid))
             {
-                return new Guid(value.ToString());
+                convertObjFunc = value => new Guid(value.ToString());
             }
             else
             {
                 Type nullableType;
                 if (IsNullable(dstType, out nullableType))
                 {
-                    if (value == null || value.ToString() == String.Empty)
-                        return null;
-                    return ConvertBasicType(value, nullableType);
+                    convertObjFunc = value =>
+                    {
+                        if (value == null || value.ToString() == String.Empty)
+                            return null;
+                        return ConvertBasicType(value, nullableType);
+                    };
                 }
-
-                IFormatProvider ifProvider = CultureInfo.InvariantCulture;
-                convertedObj = Convert.ChangeType(value, dstType, ifProvider);
+                else
+                {
+                    IFormatProvider ifProvider = CultureInfo.InvariantCulture;
+                    convertObjFunc = value => Convert.ChangeType(value, dstType, ifProvider);
+                }
             }
 
-            return convertedObj;
+            return convertObjFunc;
         }
 
         /// <summary>

@@ -1412,32 +1412,23 @@ namespace YAXLib
 
             if (serType == YAXCollectionSerializationTypes.Serially && elemToAdd.IsEmpty)
             {
-                var sb = new StringBuilder();
-
-                bool isFirst = true;
-                object objToAdd = null;
-                foreach (object obj in collectionInst)
+                var isEnum = colItemsUdt.IsEnum;
+                var list = new List<String>();
+                Func<object, string> toXmlFunc;
+                if (isEnum)
+                    toXmlFunc = obj => colItemsUdt.EnumWrapper.GetAlias(obj).ToString();
+                else if (format != null)
+                    toXmlFunc = obj => ReflectionUtils.TryFormatObject(obj, format).ToString();
+                else
+                    toXmlFunc = XMLUtils.GetToXmlValueFunc(colItemType);
+                foreach (var obj in collectionInst)
                 {
-                    if (colItemsUdt.IsEnum)
-                        objToAdd = colItemsUdt.EnumWrapper.GetAlias(obj);
-                    else if (format != null)
-                        objToAdd = ReflectionUtils.TryFormatObject(obj, format);
-                    else
-                        objToAdd = obj;
-
-                    if (isFirst)
-                    {
-                        sb.Append(objToAdd.ToXmlValue());
-                        isFirst = false;
-                    }
-                    else
-                    {
-                        sb.AppendFormat(CultureInfo.InvariantCulture, "{0}{1}", seperator, objToAdd);
-                    }
+                    list.Add(toXmlFunc(obj));
                 }
+                var joinedValues = string.Join(seperator, list);
 
                 bool alreadyAdded = false;
-                elemToAdd = MakeBaseElement(insertionLocation, elementName, sb.ToString(), out alreadyAdded);
+                elemToAdd = MakeBaseElement(insertionLocation, elementName, joinedValues, out alreadyAdded);
                 if (alreadyAdded)
                     elemToAdd = null;
             }
@@ -1610,7 +1601,7 @@ namespace YAXLib
                         else
                         {
                             OnExceptionOccurred(new YAXAttributeMissingException(
-                                StringUtils.CombineLocationAndElementName(serializationLocation, member.Alias), elem ?? baseElement),
+                                StringUtils.CombineLocationAndElementName(serializationLocation, member.Alias.OverrideNsIfEmpty(TypeNamespace)), elem ?? baseElement),
                                 (!member.MemberType.IsValueType() && m_udtWrapper.IsNotAllowdNullObjectSerialization) ? YAXExceptionTypes.Ignore : member.TreatErrorsAs);
                         }
                     }
@@ -1643,7 +1634,8 @@ namespace YAXLib
                             }
                             else
                             {
-                                OnExceptionOccurred(new YAXElementValueMissingException(serializationLocation, innerelem ?? baseElement),
+                                OnExceptionOccurred(new YAXElementValueMissingException(
+                                        StringUtils.CombineLocationAndElementName(serializationLocation, member.Alias.OverrideNsIfEmpty(TypeNamespace)), innerelem ?? baseElement),
                                     (!member.MemberType.IsValueType() && m_udtWrapper.IsNotAllowdNullObjectSerialization) ? YAXExceptionTypes.Ignore : member.TreatErrorsAs);
                             }
                         }
@@ -1851,7 +1843,7 @@ namespace YAXLib
 
             UdtWrapper typeWrapper = TypeWrappersPool.Pool.GetTypeWrapper(type, this);
 
-            foreach (var member in GetFieldsToBeSerialized(typeWrapper))
+            foreach (var member in typeWrapper.GetFieldsToBeSerialized(this))
             {
                 if (!member.CanWrite)
                     continue;
@@ -2084,12 +2076,12 @@ namespace YAXLib
 
                 string elemValue = xelemValue.Value;
                 string[] items = elemValue.Split(seps, StringSplitOptions.RemoveEmptyEntries);
-
+                var convertFunc = ReflectionUtils.GetConvertBasicTypeFunc(itemType);
                 foreach (string wordItem in items)
                 {
                     try
                     {
-                        lst.Add(ReflectionUtils.ConvertBasicType(wordItem, itemType));
+                        lst.Add(convertFunc(wordItem));
                     }
                     catch
                     {
@@ -2293,6 +2285,27 @@ namespace YAXLib
 
                 return col;
             }
+            else if (ReflectionUtils.IsTypeEqualOrInheritedFromType(colType, typeof(IList)))
+            {
+                if (containerObj == null) 
+                    return lst;
+
+                var col = containerObj as IList;
+
+                foreach (var lstItem in lst)
+                {
+                    try
+                    {
+                        col.Add(lstItem);
+                    }
+                    catch
+                    {
+                        OnExceptionOccurred(new YAXCannotAddObjectToCollection(memberAlias.ToString(), lstItem, xelemValue), this.m_defaultExceptionType);
+                    }
+                }
+
+                return col;
+            }
             else if (ReflectionUtils.IsIEnumerable(colType))
             {
                 if (containerObj == null)
@@ -2301,7 +2314,7 @@ namespace YAXLib
                 object col = containerObj;
 
                 string additionMethodName = "Add";
-                
+                                
                 if (ReflectionUtils.IsTypeEqualOrInheritedFromType(colType, typeof(Queue)) ||
                     ReflectionUtils.IsTypeEqualOrInheritedFromType(colType, typeof(Queue<>)))
                 {
@@ -2757,47 +2770,7 @@ namespace YAXLib
             var customSerializer = Activator.CreateInstance(customSerType, new object[0]);
             return (string) customSerType.InvokeMethod("SerializeToValue", customSerializer, new[] {objToSerialize});
         }
-
-        /// <summary>
-        /// Gets the sequence of fields to be serialized for the specified type. This sequence is retreived according to 
-        /// the field-types specified by the user.
-        /// </summary>
-        /// <param name="typeWrapper">The type wrapper for the type whose serializable 
-        /// fields is going to be retreived.</param>
-        /// <returns>the sequence of fields to be serialized for the specified type</returns>
-        private IEnumerable<MemberWrapper> GetFieldsToBeSerialized(UdtWrapper typeWrapper)
-        {
-            foreach (var member in typeWrapper.UnderlyingType.GetMembers(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public))
-            {
-                char name0 = member.Name[0];
-                if ((Char.IsLetter(name0) || name0 == '_') && // TODO: this is wrong, .NET supports unicode variable names or those starting with @
-                    (member.MemberType == MemberTypes.Property || member.MemberType == MemberTypes.Field))
-                {
-                    var prop = member as PropertyInfo;
-                    if (prop != null)
-                    {
-                        // ignore indexers; if member is an indexer property, do not serialize it
-                        if (prop.GetIndexParameters().Length > 0)
-                            continue;
-
-                        // don't serialize delegates as well
-                        if (ReflectionUtils.IsTypeEqualOrInheritedFromType(prop.PropertyType, typeof(Delegate)))
-                            continue;
-                    }
-
-                    if((typeWrapper.IsCollectionType || typeWrapper.IsDictionaryType)) //&& typeWrapper.IsAttributedAsNotCollection)
-                        if(ReflectionUtils.IsPartOfNetFx(member))
-                            continue;
-
-                    var memInfo = new MemberWrapper(member, this);
-                    if (memInfo.IsAllowedToBeSerialized(typeWrapper.FieldsToSerialize, m_udtWrapper.DontSerializePropertiesWithNoSetter))
-                    {
-                        yield return memInfo;
-                    }
-                }
-            }
-        }
-
+        
         /// <summary>
         /// Gets the sequence of fields to be serialized for the serializer's underlying type. 
         /// This sequence is retreived according to the field-types specified by the user.
@@ -2805,7 +2778,7 @@ namespace YAXLib
         /// <returns>the sequence of fields to be serialized for the serializer's underlying type.</returns>
         private IEnumerable<MemberWrapper> GetFieldsToBeSerialized()
         {
-            return GetFieldsToBeSerialized(m_udtWrapper).OrderBy(t=>t.Order);
+            return m_udtWrapper.GetFieldsToBeSerialized(this);
         }
 
         private void AddMetadataAttribute(XElement parent, XName attrName, object attrValue, XNamespace documentDefaultNamespace)
@@ -2838,13 +2811,23 @@ namespace YAXLib
         /// <param name="exceptionType">Type of the exception.</param>
         private void OnExceptionOccurred(YAXException ex, YAXExceptionTypes exceptionType)
         {
-            m_exceptionOccurredDuringMemberDeserialization = true;
+            bool logException = false;
+            if (!m_exceptionOccurredDuringMemberDeserialization)
+            {
+                m_exceptionOccurredDuringMemberDeserialization = true;
+                logException= true;
+            }
             if (exceptionType == YAXExceptionTypes.Ignore)
             {
                 return;
             }
 
-            m_parsingErrors.AddException(ex, exceptionType);
+            // only log 1 exception per member
+            if (logException)
+            {
+                m_parsingErrors.AddException(ex, exceptionType);
+            }
+
             if ((m_exceptionPolicy == YAXExceptionHandlingPolicies.ThrowWarningsAndErrors) ||
                 (m_exceptionPolicy == YAXExceptionHandlingPolicies.ThrowErrorsOnly && exceptionType == YAXExceptionTypes.Error))
             {

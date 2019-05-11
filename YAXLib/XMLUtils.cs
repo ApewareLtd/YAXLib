@@ -14,6 +14,7 @@ using System.Globalization;
 using System.Collections.Generic;
 using System.Text;
 using System.Linq;
+using System.Numerics;
 
 namespace YAXLib
 {
@@ -444,18 +445,37 @@ namespace YAXLib
 
         public static string ToXmlValue(this object self)
         {
-          string typeName = self == null ? String.Empty : self.GetType().Name;
+            return GetToXmlValueFunc(self == null ? null : self.GetType()).Invoke(self);
+        }
 
-          switch (typeName)
-          {
-            case "Double":
-              return ((double)self).ToString("R", CultureInfo.InvariantCulture);
-            case "Single":
-              return ((Single)self).ToString("R", CultureInfo.InvariantCulture);
-            case "BigInteger":
-              return ReflectionUtils.InvokeMethod(self, "ToString", "R", CultureInfo.InvariantCulture) as string;
-          }
-          return Convert.ToString((self ?? String.Empty), CultureInfo.InvariantCulture);
+        public static Func<object, string> GetToXmlValueFunc(Type type)
+        {
+            var invCulture = CultureInfo.InvariantCulture;
+            if (type == typeof(Double))
+            {
+                return obj => ((double)obj).ToString("R", invCulture);
+            }
+            if (type == typeof(Single))
+            {
+                return obj => ((Single)obj).ToString("R", invCulture);
+            }
+            if (type == typeof(BigInteger))
+            {
+                return obj => ((BigInteger)obj).ToString("R", invCulture);
+            }
+            if (type == typeof(Int32))
+            {
+                return obj => ((Int32) obj).ToString(invCulture);
+            }
+            if (type == typeof(Int64))
+            {
+                return obj => ((Int64) obj).ToString(invCulture);
+            }
+            if (type == typeof(String))
+            {
+                return obj => ((String)obj);
+            }
+            return (o) => Convert.ToString((o ?? String.Empty), invCulture);
         }
 
         public static XAttribute AddAttributeNamespaceSafe(this XElement parent, XName attrName, object attrValue, XNamespace documentDefaultNamespace)

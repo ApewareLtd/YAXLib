@@ -347,5 +347,31 @@ namespace YAXLibTests
             StringAssert.Contains(testName, ex.Message);
 
         }
+        
+        [Test]
+        public void TestTreatErrorsAs()
+        {
+            const string bookXml = @"<!-- This example demonstrates serializing a very simple class -->
+                <Book>
+                  <Title>Inside C#</Title>
+                  <Author>Tom Archer &amp; Andrew Whitechapel</Author>
+                  <PublishYear>2002</PublishYear>
+                </Book>";
+
+            Action<YAXExceptionTypes, int> testFunc = (exTypes, expectedNumberOfErrors) =>
+            {
+                var serializer = new YAXSerializer(typeof(BookClassTesgingSerializeAsValue), YAXExceptionHandlingPolicies.ThrowErrorsOnly, exTypes, YAXSerializationOptions.DisplayLineInfoInExceptions);
+                serializer.Deserialize(bookXml);
+                Assert.AreEqual(expectedNumberOfErrors, serializer.ParsingErrors.Count);
+                for (int i = 0; i < expectedNumberOfErrors; i++)
+                {
+                    Assert.IsInstanceOf<YAXElementValueMissingException>(serializer.ParsingErrors[i].Key);
+                }
+            };
+
+            Assert.DoesNotThrow(() => testFunc(YAXExceptionTypes.Ignore, 0));
+            Assert.DoesNotThrow(() => testFunc(YAXExceptionTypes.Warning, 2));
+            Assert.Throws<YAXElementValueMissingException>(() => testFunc(YAXExceptionTypes.Error, 1));
+        }
     }
 }

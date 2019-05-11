@@ -9,6 +9,9 @@
 //-----------------------------------------------------------------------
 
 using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
 using System.Xml.Linq;
 
 namespace YAXLib
@@ -42,6 +45,22 @@ namespace YAXLib
         /// the dictionary attribute instance
         /// </summary>
         private YAXDictionaryAttribute m_dictionaryAttributeInstance = null;
+
+        /// <summary>
+        /// the fields to be serializer
+        /// </summary>
+        private List<MemberWrapper> m_fieldsToBeSerialized = null;
+
+        /// <summary>
+        /// An object to lock fields to be serialized to make it thread-safe
+        /// </summary>
+        private object m_lockFields = new object();
+
+        
+        /// <summary>
+        /// The value of the serializer DefaultExceptionType when the fields were created
+        /// </summary>
+        private YAXExceptionTypes m_fieldsDefaultExceptionType = YAXExceptionTypes.Error;
 
         /// <summary>
         /// reference to an instance of <c>EnumWrapper</c> in case that the current instance is an enum.
@@ -95,7 +114,7 @@ namespace YAXLib
         /// Gets the alias of the type.
         /// </summary>
         /// <value>The alias of the type.</value>
-        public XName Alias 
+        public XName Alias
         {
             get
             {
@@ -361,7 +380,7 @@ namespace YAXLib
         /// Gets a value indicating whether this instance has a custom namespace
         /// defined for it through the <see cref="YAXNamespaceAttribute"/> attribute.
         /// </summary>
-        public bool HasNamespace 
+        public bool HasNamespace
         {
             get
             {
@@ -376,7 +395,7 @@ namespace YAXLib
         /// If <see cref="HasNamespace"/> is <c>false</c> then this should
         /// be inherited from any parent elements.
         /// </remarks>
-        public XNamespace Namespace 
+        public XNamespace Namespace
         {
             get
             {
@@ -418,7 +437,15 @@ namespace YAXLib
         {
             if (!m_isSerializationOptionSetByAttribute)
             {
-                SerializationOption = caller != null ? caller.SerializationOption : YAXSerializationOptions.SerializeNullObjects;
+                var newSerializationOption = caller != null ? caller.SerializationOption : YAXSerializationOptions.SerializeNullObjects;
+                if (SerializationOption != newSerializationOption)
+                {
+                    lock (m_lockFields)
+                    {
+                        m_fieldsToBeSerialized = null;
+                        SerializationOption = newSerializationOption;
+                    }
+                }
             }
         }
 
@@ -466,6 +493,58 @@ namespace YAXLib
         }
 
         /// <summary>
+        /// Gets the sequence of fields to be serialized for the specified type. This sequence is retreived according to 
+        /// the field-types specified by the user.
+        /// </summary>
+        /// <returns>the sequence of fields to be serialized for this type</returns>
+        public IEnumerable<MemberWrapper> GetFieldsToBeSerialized(YAXSerializer callerSerializer)
+        {
+            lock (m_lockFields)
+            {
+                if (m_fieldsToBeSerialized == null || m_fieldsDefaultExceptionType != callerSerializer.DefaultExceptionType)
+                {
+                    // if the default exception type has changed then we need to recreate the list
+                    m_fieldsDefaultExceptionType = callerSerializer.DefaultExceptionType;
+                    var fieldsToBeSerialized = new List<MemberWrapper>();
+                    foreach (var member in UnderlyingType.GetMembers(
+                        BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public))
+                    {
+                        char name0 = member.Name[0];
+                        if ((Char.IsLetter(name0) ||
+                             name0 == '_'
+                            ) && // TODO: this is wrong, .NET supports unicode variable names or those starting with @
+                            (member.MemberType == MemberTypes.Property || member.MemberType == MemberTypes.Field))
+                        {
+                            var prop = member as PropertyInfo;
+                            if (prop != null)
+                            {
+                                // ignore indexers; if member is an indexer property, do not serialize it
+                                if (prop.GetIndexParameters().Length > 0)
+                                    continue;
+
+                                // don't serialize delegates as well
+                                if (ReflectionUtils.IsTypeEqualOrInheritedFromType(prop.PropertyType, typeof(Delegate)))
+                                    continue;
+                            }
+
+                            if ((IsCollectionType || IsDictionaryType)) //&& typeWrapper.IsAttributedAsNotCollection)
+                                if (ReflectionUtils.IsPartOfNetFx(member))
+                                    continue;
+
+                            var memInfo = new MemberWrapper(member, callerSerializer);
+                            if (memInfo.IsAllowedToBeSerialized(FieldsToSerialize, DontSerializePropertiesWithNoSetter))
+                            {
+                                fieldsToBeSerialized.Add(memInfo);
+                            }
+                        }
+                    }
+                    m_fieldsToBeSerialized = fieldsToBeSerialized.OrderBy(t => t.Order).ToList();
+                }
+                return m_fieldsToBeSerialized;
+            }
+        }
+
+        /// <summary>
         /// Processes the specified attribute.
         /// </summary>
         /// <param name="attr">The attribute to process.</param>
@@ -474,10 +553,10 @@ namespace YAXLib
             if (attr is YAXCommentAttribute)
             {
                 string comment = (attr as YAXCommentAttribute).Comment;
-                if(!String.IsNullOrEmpty(comment))
+                if (!String.IsNullOrEmpty(comment))
                 {
-                    string[] comments = comment.Split(new [] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-                    for(int i = 0; i < comments.Length; i++)
+                    string[] comments = comment.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                    for (int i = 0; i < comments.Length; i++)
                     {
                         comments[i] = String.Format(" {0} ", comments[i].Trim());
                     }
@@ -501,7 +580,7 @@ namespace YAXLib
             }
             else if (attr is YAXNotCollectionAttribute)
             {
-                if(!ReflectionUtils.IsArray(m_udtType))
+                if (!ReflectionUtils.IsArray(m_udtType))
                     IsAttributedAsNotCollection = true;
             }
             else if (attr is YAXCustomSerializerAttribute)
@@ -520,10 +599,10 @@ namespace YAXLib
                 {
                     throw new YAXException("The generic argument of the class and the type of the class do not match");
                 }
-                
+
                 this.CustomSerializerType = serType;
             }
-            else if(attr is YAXPreserveWhitespaceAttribute)
+            else if (attr is YAXPreserveWhitespaceAttribute)
             {
                 PreservesWhitespace = true;
             }
@@ -546,5 +625,7 @@ namespace YAXLib
                 throw new Exception("Attribute not applicable to types!");
             }
         }
+
+
     }
 }
